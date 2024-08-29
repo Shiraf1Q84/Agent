@@ -6,6 +6,11 @@ from langchain.memory import ConversationBufferMemory
 from tools.search_ddg import search_ddg
 from tools.fetch_page import fetch_page
 import os
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # AgentのSystem Promptの作成
 CUSTOM_SYSTEM_PROMPT = """
@@ -39,23 +44,31 @@ def create_agent(api_key):
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad")
     ])
-    llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo", api_key=api_key)
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-    
-    agent = create_tool_calling_agent(llm, tools, prompt)
-    
-    return AgentExecutor(
-        agent=agent,
-        tools=tools,
-        memory=memory,
-        verbose=True,
-        return_intermediate_steps=True
-    )
+    try:
+        llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo", api_key=api_key)
+        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+        
+        agent = create_tool_calling_agent(llm, tools, prompt)
+        
+        return AgentExecutor(
+            agent=agent,
+            tools=tools,
+            memory=memory,
+            verbose=True,
+            return_intermediate_steps=True
+        )
+    except Exception as e:
+        logger.error(f"Error creating agent: {str(e)}")
+        raise
 
 def plan_search_keywords(question, api_key):
-    llm = ChatOpenAI(temperature=0.7, model_name="gpt-3.5-turbo", api_key=api_key)
-    response = llm.invoke(SEARCH_PLANNING_PROMPT.format(question=question))
-    return response.content
+    try:
+        llm = ChatOpenAI(temperature=0.7, model_name="gpt-3.5-turbo", api_key=api_key)
+        response = llm.invoke(SEARCH_PLANNING_PROMPT.format(question=question))
+        return response.content
+    except Exception as e:
+        logger.error(f"Error planning search keywords: {str(e)}")
+        raise
 
 # Streamlit UI
 st.title("インターネットで調べ物をしてくれるエージェント")
@@ -68,45 +81,53 @@ if 'chat_history' not in st.session_state:
 api_key = st.text_input("OpenAI API Keyを入力してください", type="password")
 
 if api_key:
-    # APIキーが入力されたら、エージェントを作成または更新
-    if 'agent' not in st.session_state or st.session_state.api_key != api_key:
-        st.session_state.agent = create_agent(api_key)
-        st.session_state.api_key = api_key
+    try:
+        # APIキーが入力されたら、エージェントを作成または更新
+        if 'agent' not in st.session_state or st.session_state.api_key != api_key:
+            st.session_state.agent = create_agent(api_key)
+            st.session_state.api_key = api_key
 
-    # チャット履歴の表示
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
+        # チャット履歴の表示
+        for message in st.session_state.chat_history:
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
 
-    # ユーザー入力
-    user_input = st.chat_input("質問を入力してください")
-    if user_input:
-        # ユーザーの入力を表示
-        with st.chat_message("user"):
-            st.write(user_input)
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        # ユーザー入力
+        user_input = st.chat_input("質問を入力してください")
+        if user_input:
+            # ユーザーの入力を表示
+            with st.chat_message("user"):
+                st.write(user_input)
+            st.session_state.chat_history.append({"role": "user", "content": user_input})
 
-        # 検索キーワードの計画
-        with st.spinner("検索キーワードを計画中..."):
-            search_keywords = plan_search_keywords(user_input, api_key)
-        st.write("計画された検索キーワード:", search_keywords)
+            try:
+                # 検索キーワードの計画
+                with st.spinner("検索キーワードを計画中..."):
+                    search_keywords = plan_search_keywords(user_input, api_key)
+                st.write("計画された検索キーワード:", search_keywords)
 
-        # エージェントの実行
-        with st.spinner("回答を生成中..."):
-            response = st.session_state.agent.invoke(
-                {"input": f"検索キーワード: {search_keywords}\n質問: {user_input}"}
-            )
+                # エージェントの実行
+                with st.spinner("回答を生成中..."):
+                    response = st.session_state.agent.invoke(
+                        {"input": f"検索キーワード: {search_keywords}\n質問: {user_input}"}
+                    )
 
-        # エージェントの回答を表示
-        with st.chat_message("assistant"):
-            st.write(response["output"])
-        st.session_state.chat_history.append({"role": "assistant", "content": response["output"]})
+                # エージェントの回答を表示
+                with st.chat_message("assistant"):
+                    st.write(response["output"])
+                st.session_state.chat_history.append({"role": "assistant", "content": response["output"]})
 
-        # 推論過程の表示
-        st.subheader("推論過程")
-        for step in response["intermediate_steps"]:
-            st.write(f"行動: {step[0]}")
-            st.write(f"結果: {step[1]}")
-            st.write("---")
+                # 推論過程の表示
+                st.subheader("推論過程")
+                for step in response["intermediate_steps"]:
+                    st.write(f"行動: {step[0]}")
+                    st.write(f"結果: {step[1]}")
+                    st.write("---")
+            except Exception as e:
+                st.error(f"エラーが発生しました: {str(e)}")
+                logger.error(f"Error during agent execution: {str(e)}")
+    except Exception as e:
+        st.error(f"エラーが発生しました: {str(e)}")
+        logger.error(f"Error in main app flow: {str(e)}")
 else:
     st.warning("OpenAI API Keyを入力してください")
