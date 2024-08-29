@@ -61,7 +61,7 @@ def mock_fetch_info(topic):
 # Gemini モデルの初期化
 def initialize_model(api_key):
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel('gemini-1.5-pro')
+    return genai.GenerativeModel('gemini-1.5-flash-latest')
 
 # サイドバー設定
 with st.sidebar:
