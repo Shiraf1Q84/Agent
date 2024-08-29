@@ -1,160 +1,163 @@
 import streamlit as st
 import google.generativeai as genai
-import logging
 import json
+import time
 
-# ロギングの設定
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Streamlit page config
+st.set_page_config(page_title="Gemini Agent", layout="wide")
 
-# カスタムCSS
-custom_css = """
+# Custom CSS for a more geeky look
+st.markdown("""
 <style>
     body {
-        color: #888888;  /* 文字色を灰色に設定 */
+        color: #00FF00;
+        background-color: #000000;
+        font-family: 'Courier New', monospace;
     }
     .stApp {
         max-width: 1200px;
         margin: 0 auto;
     }
     .chat-message {
-        padding: 1.5rem;
+        padding: 1rem;
         border-radius: 0.5rem;
         margin-bottom: 1rem;
-        display: flex;
-        flex-direction: column;
+        border: 1px solid #00FF00;
     }
     .chat-message.user {
-        background-color: #2b313e;
+        background-color: #001100;
     }
     .chat-message.bot {
-        background-color: #475063;
+        background-color: #002200;
     }
-    .chat-message .avatar {
-        width: 20%;
-    }
-    .chat-message .message {
-        width: 80%;
-        padding: 0 1.5rem;
-    }
-    .inference-step {
-        background-color: #2b313e;
+    .inference-log {
+        background-color: #001100;
+        border: 1px solid #00FF00;
         border-radius: 0.5rem;
         padding: 1rem;
-        margin-bottom: 0.5rem;
+        font-size: 0.8rem;
+        height: 600px;
+        overflow-y: auto;
     }
     .sidebar .stButton>button {
         width: 100%;
+        background-color: #001100;
+        color: #00FF00;
+    }
+    .stTextInput>div>div>input {
+        color: #00FF00;
+        background-color: #001100;
     }
 </style>
+""", unsafe_allow_html=True)
+
+# Initialize session state
+if 'messages' not in st.session_state:
+    st.session_state.messages = []
+if 'inference_log' not in st.session_state:
+    st.session_state.inference_log = []
+
+# Gemini system prompt
+SYSTEM_PROMPT = """
+You are an advanced AI agent. Follow these steps to answer user queries:
+1. Analyze the user's question and formulate a search strategy.
+2. Use web search to gather relevant information.
+3. Process and synthesize the collected data.
+4. Generate a comprehensive answer with citations.
+5. Output detailed reasoning steps in JSON format.
+
+For each step, output in this JSON format:
+{
+    "step": "step_number",
+    "process": "detailed_description_of_the_current_process",
+    "analysis": "in-depth_analysis_of_the_current_step",
+    "next_action": "description_of_the_next_planned_action"
+}
 """
 
-# Streamlitページの設定
-st.set_page_config(page_title="Gemini Web Search Agent", layout="wide")
-st.markdown(custom_css, unsafe_allow_html=True)
-
-# Geminiのシステムプロンプト
-CUSTOM_SYSTEM_PROMPT = """
-あなたは高度なAIアシスタントです。ユーザーの質問に答えるために、以下のステップを踏んでください：
-1. ユーザーの質問を理解し、適切な検索戦略を立てる。
-2. Web検索を使用して情報を収集する。
-3. 収集した情報を分析し、ユーザーの質問に対する回答を作成する。
-4. 回答の根拠となる情報源を明記する。
-
-各ステップごとに、以下のJSON形式で出力してください：
-{"step": "ステップ番号", "action": "行動の説明", "thought": "思考過程"}
-
-最終的な回答は、別途テキストで出力してください。
-"""
-
-# Web検索機能（モック）
+# Mock functions for web search and content fetching
 def search_web(query):
-    return f"Web search results for: {query}"
+    time.sleep(1)  # Simulate API call
+    return f"[MOCK] Search results for: {query}"
 
-# ページ内容取得機能（モック）
-def fetch_page(url):
-    return f"Content of page: {url}"
+def fetch_content(url):
+    time.sleep(1)  # Simulate API call
+    return f"[MOCK] Content from: {url}"
 
-# Geminiモデルの初期化
-def initialize_model(api_key):
+# Initialize Gemini model
+@st.cache_resource
+def init_model(api_key):
     genai.configure(api_key=api_key)
     return genai.GenerativeModel('gemini-pro')
 
-# サイドバーの設定
-with st.sidebar:
-    st.title("設定")
-    api_key = st.text_input("Google AI API Key", type="password")
-    if st.button("APIキーを設定"):
-        if api_key:
-            try:
-                st.session_state.model = initialize_model(api_key)
-                st.success("APIキーが正常に設定されました。")
-            except Exception as e:
-                st.error(f"APIキーの設定中にエラーが発生しました: {str(e)}")
-        else:
-            st.warning("APIキーを入力してください。")
+# Main chat interface
+chat_col, inference_col = st.columns([3, 2])
 
-# メインコンテンツ
-st.title("Gemini Web Search Agent")
-
-# チャット履歴とUIコンポーネントの初期化
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
-
-if 'inference_steps' not in st.session_state:
-    st.session_state.inference_steps = []
-
-# チャットエリアとインファレンスエリアのレイアウト
-chat_column, inference_column = st.columns([2, 1])
-
-# チャットエリア
-with chat_column:
+with chat_col:
+    st.title("Gemini Agent Interface")
+    
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-
-    # ユーザー入力
-    if prompt := st.chat_input("質問を入力してください"):
+    
+    if prompt := st.chat_input("Enter your query"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Geminiモデルが設定されている場合、応答を生成
-        if 'model' in st.session_state:
+        # Check if model is initialized
+        if 'model' not in st.session_state:
+            st.error("Please set up the API key first.")
+        else:
             with st.chat_message("assistant"):
                 message_placeholder = st.empty()
                 full_response = ""
-                try:
-                    for chunk in st.session_state.model.generate_content(
-                        f"{CUSTOM_SYSTEM_PROMPT}\n\nユーザーの質問: {prompt}",
-                        stream=True
-                    ):
-                        full_response += chunk.text
-                        message_placeholder.markdown(full_response + "▌")
-                    message_placeholder.markdown(full_response)
-                except Exception as e:
-                    st.error(f"応答生成中にエラーが発生しました: {str(e)}")
-                    logger.error(f"Error during response generation: {str(e)}")
+                for chunk in st.session_state.model.generate_content(
+                    f"{SYSTEM_PROMPT}\n\nUser query: {prompt}",
+                    stream=True
+                ):
+                    full_response += chunk.text
+                    message_placeholder.markdown(full_response + "▌")
+                message_placeholder.markdown(full_response)
+            
             st.session_state.messages.append({"role": "assistant", "content": full_response})
-
-            # 推論ステップの抽出と表示
-            st.session_state.inference_steps = []
+            
+            # Extract and store inference steps
             for line in full_response.split('\n'):
                 try:
                     step = json.loads(line)
                     if isinstance(step, dict) and 'step' in step:
-                        st.session_state.inference_steps.append(step)
+                        st.session_state.inference_log.append(step)
                 except json.JSONDecodeError:
                     pass
 
-# インファレンスエリア
-with inference_column:
-    st.subheader("推論プロセス")
-    for step in st.session_state.inference_steps:
-        with st.expander(f"ステップ {step['step']}"):
-            st.write(f"**行動:** {step['action']}")
-            st.write(f"**思考:** {step['thought']}")
+# Sidebar for API key input
+with st.sidebar:
+    api_key = st.text_input("Enter Google AI API Key", type="password")
+    if st.button("Initialize Model"):
+        if api_key:
+            try:
+                st.session_state.model = init_model(api_key)
+                st.success("Model initialized successfully!")
+            except Exception as e:
+                st.error(f"Error initializing model: {str(e)}")
+        else:
+            st.warning("Please enter an API key.")
 
-# APIキーが設定されていない場合の警告
+# Inference log display
+with inference_col:
+    st.subheader("Agent Inference Log")
+    inference_log = st.empty()
+    
+    log_content = ""
+    for step in st.session_state.inference_log:
+        log_content += f"Step {step['step']}:\n"
+        log_content += f"Process: {step['process']}\n"
+        log_content += f"Analysis: {step['analysis']}\n"
+        log_content += f"Next Action: {step['next_action']}\n\n"
+    
+    inference_log.markdown(f'<div class="inference-log">{log_content}</div>', unsafe_allow_html=True)
+
+# Display warning if model is not initialized
 if 'model' not in st.session_state:
-    st.warning("Google AI API Keyを設定してください。")
+    st.warning("Please set up the Google AI API Key to start.")
