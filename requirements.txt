@@ -1,0 +1,14 @@
+openai
+tiktoken
+langchain
+langchain-community
+langchain-core
+langchain-openai
+duckduckgo-search==4.2
+langchain_text_splitters
+html2text==2020.1.16
+readability-lxml==0.8.1
+lxml[html_clean]==5.2.1
+langgraph
+streamlit
+pygraphviz
