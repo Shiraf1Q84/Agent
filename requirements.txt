@@ -13,3 +13,6 @@ langgraph
 streamlit
 networkx
 matplotlib
+google-generativeai 
+requests 
+beautifulsoup4
