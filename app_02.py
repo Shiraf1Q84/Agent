@@ -1,161 +1,191 @@
 import streamlit as st
 import google.generativeai as genai
-import requests
-from bs4 import BeautifulSoup
-import logging
+from typing import Dict, Any
 import json
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Streamlit UI設定
+st.set_page_config(page_title="Geminiエージェントチャットボット", layout="wide")
 
-# Geminiのシステムプロンプト
-CUSTOM_SYSTEM_PROMPT = """
-あなたの役割は以下の通りです：
-1. ユーザーの質問を理解し、適切な検索キーワードを計画する。
-2. 計画したキーワードを使用してWeb検索を行う。
-3. 検索結果から関連情報を抽出し、ユーザーの質問に答える。
-4. 必要に応じて追加の情報を検索する。
-5. 最終的な回答を作成し、使用した情報源を引用する。
-回答する際は以下のルールに従ってください：
-- 回答は簡潔にまとめ、必要に応じて箇条書きを使用する。
-- 長文になる場合は適切に改行を入れて読みやすくする。
-- 回答の最後に、参照したWebページのURLを記載する。
-- 推論過程を詳細に説明し、各ステップで何を考え、どのような行動をとったかを明確にする。
-- 推論過程は以下のJSONフォーマットで出力してください：
-  {"step": "ステップ番号", "action": "行動の説明", "thought": "思考過程"}
-- 最終的な回答は、推論過程とは別に出力してください。
-"""
-
-def search_ddg(query):
-    url = f"https://duckduckgo.com/html/?q={query}"
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    results = []
-    for result in soup.find_all('div', class_='result__body'):
-        title = result.find('a', class_='result__a').text
-        snippet = result.find('a', class_='result__snippet').text
-        link = result.find('a', class_='result__a')['href']
-        results.append({'title': title, 'snippet': snippet, 'link': link})
-    return results[:5]  # 上位5件の結果を返す
-
-def fetch_page(url):
-    try:
-        response = requests.get(url)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        return soup.get_text()[:1000]  # 最初の1000文字を返す
-    except Exception as e:
-        return f"Error fetching page: {str(e)}"
-
-def create_agent(api_key):
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-pro')
-        return model
-    except Exception as e:
-        logger.error(f"Error creating agent: {str(e)}")
-        raise
-
-def plan_search_keywords(question, model):
-    try:
-        response = model.generate_content(f"以下の質問に対する適切な検索キーワードを提案してください：\n{question}")
-        return response.text
-    except Exception as e:
-        logger.error(f"Error planning search keywords: {str(e)}")
-        raise
-
-# Streamlit UI
-st.set_page_config(layout="wide")
-st.title("Geminiを使用したWeb検索エージェント")
+# カスタムCSS
+st.markdown("""
+<style>
+    .main-content { max-width: 1200px; margin: auto; padding: 20px; }
+    .chat-container { border: 1px solid #ddd; border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+    .user-message { background-color: #e6f3ff; padding: 10px; border-radius: 10px; margin-bottom: 10px; }
+    .assistant-message { background-color: #f0f0f0; padding: 10px; border-radius: 10px; margin-bottom: 10px; }
+    .reasoning-container { border-left: 3px solid #4CAF50; padding-left: 20px; margin-top: 20px; }
+    .stTextInput>div>div>input { min-height: 50px; }
+</style>
+""", unsafe_allow_html=True)
 
 # セッション状態の初期化
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
+if 'reasoning_history' not in st.session_state:
+    st.session_state.reasoning_history = []
 
-# Google AI API Keyの入力
-api_key = st.text_input("Google AI API Keyを入力してください", type="password")
+# モックツールの定義
+def search_web(query: str) -> str:
+    return f"Web検索結果: {query}に関する情報"
 
-if api_key:
-    try:
-        # APIキーが入力されたら、エージェントを作成または更新
-        if 'agent' not in st.session_state or st.session_state.api_key != api_key:
-            st.session_state.agent = create_agent(api_key)
-            st.session_state.api_key = api_key
+def fetch_page(url: str) -> str:
+    return f"{url}の内容"
 
-        # 3列レイアウトの作成
-        left_column, center_column, right_column = st.columns([1, 2, 1])
+tools = [
+    {
+        "name": "search_web",
+        "description": "Web検索を行い、結果を返します。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "検索クエリ"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "fetch_page",
+        "description": "指定されたURLのWebページの内容を取得します。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "取得するWebページのURL"}
+            },
+            "required": ["url"]
+        }
+    }
+]
 
-        with left_column:
-            # チャット履歴の表示
-            st.subheader("チャット履歴")
-            for message in st.session_state.chat_history:
-                with st.chat_message(message["role"]):
-                    st.write(message["content"])
+# Geminiモデルの設定と初期化
+def initialize_model(api_key: str):
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel('gemini-pro')
 
-        with center_column:
-            st.subheader("回答結果")
-            response_placeholder = st.empty()
+# エージェントの実行とストリーミング
+def run_agent(model, user_input: str) -> None:
+    system_prompt = """
+    あなたは高度なAIアシスタントです。ユーザーの質問に答えるために、以下のステップを踏んでください：
+    1. ユーザーの質問を理解し、適切な検索戦略を立てる。
+    2. 必要に応じて、提供されているツール（Web検索、ページ取得）を使用して情報を収集する。
+    3. 収集した情報を分析し、ユーザーの質問に対する回答を作成する。
+    4. 回答の根拠となる情報源を明記する。
+    5. 推論過程を詳細に説明し、各ステップで何を考え、どのような行動をとったかを明確にする。
 
-        with right_column:
-            st.subheader("推論過程")
-            inference_placeholder = st.empty()
+    回答は以下の形式で出力してください：
+    ```json
+    {
+        "思考": "現在の思考プロセスの説明",
+        "行動": {
+            "tool": "使用するツール名",
+            "params": {
+                "param1": "値1",
+                "param2": "値2"
+            }
+        },
+        "観察": "ツールの実行結果や観察した内容",
+        "結論": "最終的な回答や結論"
+    }
+    ```
 
-        # ユーザー入力
-        user_input = st.chat_input("質問を入力してください")
-        if user_input:
-            # ユーザーの入力を表示
-            with left_column:
-                with st.chat_message("user"):
-                    st.write(user_input)
-            st.session_state.chat_history.append({"role": "user", "content": user_input})
+    ユーザーの質問に答えるまで、このプロセスを繰り返してください。
+    """
 
+    prompt = f"{system_prompt}\n\nユーザーの質問: {user_input}\n\n回答:"
+    
+    reasoning_placeholder = st.empty()
+    response_placeholder = st.empty()
+    full_response = ""
+    reasoning_steps = []
+
+    for chunk in model.generate_content(prompt, tools=tools, stream=True):
+        if chunk.text:
+            full_response += chunk.text
             try:
-                # 検索キーワードの計画
-                with right_column:
-                    with st.spinner("検索キーワードを計画中..."):
-                        search_keywords = plan_search_keywords(user_input, st.session_state.agent)
-                    st.write("計画された検索キーワード:", search_keywords)
+                response_json = json.loads(full_response)
+                display_reasoning(response_json, reasoning_placeholder)
+                reasoning_steps.append(response_json)
+            except json.JSONDecodeError:
+                pass
 
-                # Web検索の実行
-                with right_column:
-                    with st.spinner("Web検索を実行中..."):
-                        search_results = search_ddg(search_keywords)
+    # ツールの実行（実際のAPIコールの代わりにモック）
+    if reasoning_steps and "行動" in reasoning_steps[-1] and "tool" in reasoning_steps[-1]["行動"]:
+        tool_name = reasoning_steps[-1]["行動"]["tool"]
+        if tool_name == "search_web":
+            result = search_web(reasoning_steps[-1]["行動"]["params"]["query"])
+        elif tool_name == "fetch_page":
+            result = fetch_page(reasoning_steps[-1]["行動"]["params"]["url"])
+        else:
+            result = "未知のツールが呼び出されました。"
+        
+        reasoning_steps[-1]["観察"] = result
+        display_reasoning(reasoning_steps[-1], reasoning_placeholder)
 
-                # コンテンツの取得と要約
-                content = ""
-                for result in search_results:
-                    content += fetch_page(result['link']) + "\n\n"
+    # 最終的な結論を表示
+    final_conclusion = reasoning_steps[-1].get("結論", "結論が見つかりませんでした。")
+    response_placeholder.markdown(f"**回答:** {final_conclusion}")
 
-                # Geminiによる回答生成（ストリーミング）
-                prompt = f"{CUSTOM_SYSTEM_PROMPT}\n\nユーザーの質問: {user_input}\n\n検索結果:\n{content}\n\n上記の情報を基に、ユーザーの質問に答えてください。"
-                
-                full_response = ""
-                inference_steps = []
-                
-                for chunk in st.session_state.agent.generate_content(prompt, stream=True):
-                    chunk_text = chunk.text
-                    full_response += chunk_text
-                    
-                    # 推論過程の更新
-                    try:
-                        inference_step = json.loads(chunk_text)
-                        if isinstance(inference_step, dict) and 'step' in inference_step:
-                            inference_steps.append(inference_step)
-                            inference_placeholder.json(inference_steps)
-                    except json.JSONDecodeError:
-                        pass
-                    
-                    # 回答の更新
-                    response_placeholder.markdown(full_response)
+    # チャット履歴と推論履歴に追加
+    st.session_state.chat_history.append({"role": "assistant", "content": final_conclusion})
+    st.session_state.reasoning_history.append(reasoning_steps)
 
-                # 最終的な回答をチャット履歴に追加
-                st.session_state.chat_history.append({"role": "assistant", "content": full_response})
+def display_reasoning(response: Dict[str, Any], placeholder: st.empty) -> None:
+    markdown = ""
+    if "思考" in response:
+        markdown += f"**思考:** {response['思考']}\n\n"
+    if "行動" in response:
+        markdown += f"**行動:** {json.dumps(response['行動'], ensure_ascii=False, indent=2)}\n\n"
+    if "観察" in response:
+        markdown += f"**観察:** {response['観察']}\n\n"
+    if "結論" in response:
+        markdown += f"**結論:** {response['結論']}\n\n"
+    placeholder.markdown(markdown)
 
-            except Exception as e:
-                st.error(f"エラーが発生しました: {str(e)}")
-                logger.error(f"Error during agent execution: {str(e)}")
-    except Exception as e:
-        st.error(f"エラーが発生しました: {str(e)}")
-        logger.error(f"Error in main app flow: {str(e)}")
-else:
-    st.warning("Google AI API Keyを入力してください")
+# メイン関数
+def main():
+    st.title("Geminiエージェントチャットボット")
+
+    # 2カラムレイアウト
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.markdown("<div class='main-content'>", unsafe_allow_html=True)
+        
+        # APIキーの入力
+        api_key = st.text_input("Google API Keyを入力してください", type="password")
+
+        if api_key:
+            model = initialize_model(api_key)
+
+            # チャット履歴の表示
+            st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
+            for message in st.session_state.chat_history:
+                if message["role"] == "user":
+                    st.markdown(f"<div class='user-message'>👤 {message['content']}</div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div class='assistant-message'>🤖 {message['content']}</div>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            # ユーザー入力
+            user_input = st.text_input("質問を入力してください", key="user_input")
+            if user_input:
+                st.session_state.chat_history.append({"role": "user", "content": user_input})
+                st.markdown(f"<div class='user-message'>👤 {user_input}</div>", unsafe_allow_html=True)
+
+                with st.spinner("回答を生成中..."):
+                    run_agent(model, user_input)
+
+        else:
+            st.warning("Google API Keyを入力してください")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with col2:
+        st.markdown("<div class='reasoning-container'>", unsafe_allow_html=True)
+        st.subheader("推論過程")
+        if st.session_state.reasoning_history:
+            for step in st.session_state.reasoning_history[-1]:
+                display_reasoning(step, st.empty())
+        st.markdown("</div>", unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
