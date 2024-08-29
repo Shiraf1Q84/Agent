@@ -1,18 +1,14 @@
 import streamlit as st
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_core.prompts import MessagesPlaceholder, ChatPromptTemplate
-from langchain_openai import ChatOpenAI
-from langchain.memory import ConversationBufferMemory
-from tools.search_ddg import search_ddg
-from tools.fetch_page import fetch_page
-import os
+import google.generativeai as genai
+import requests
+from bs4 import BeautifulSoup
 import logging
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# AgentのSystem Promptの作成
+# Geminiのシステムプロンプト
 CUSTOM_SYSTEM_PROMPT = """
 あなたの役割は以下の通りです：
 1. ユーザーの質問を理解し、適切な検索キーワードを計画する。
@@ -27,58 +23,52 @@ CUSTOM_SYSTEM_PROMPT = """
 - 推論過程を詳細に説明し、各ステップで何を考え、どのような行動をとったかを明確にする。
 """
 
-# 検索キーワード計画用のプロンプト
-SEARCH_PLANNING_PROMPT = """
-ユーザーの質問に基づいて、適切な検索キーワードを計画してください。
-複数のキーワードや検索オプションを検討し、最も効果的な検索戦略を提案してください。
-ユーザーの質問: {question}
-検索キーワード案:
-"""
+def search_ddg(query):
+    url = f"https://duckduckgo.com/html/?q={query}"
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    results = []
+    for result in soup.find_all('div', class_='result__body'):
+        title = result.find('a', class_='result__a').text
+        snippet = result.find('a', class_='result__snippet').text
+        link = result.find('a', class_='result__a')['href']
+        results.append({'title': title, 'snippet': snippet, 'link': link})
+    return results[:5]  # 上位5件の結果を返す
+
+def fetch_page(url):
+    try:
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        return soup.get_text()[:1000]  # 最初の1000文字を返す
+    except Exception as e:
+        return f"Error fetching page: {str(e)}"
 
 def create_agent(api_key):
-    tools = [search_ddg, fetch_page]
-    
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", CUSTOM_SYSTEM_PROMPT),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad")
-    ])
     try:
-        llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo", api_key=api_key)
-        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-        
-        agent = create_tool_calling_agent(llm, tools, prompt)
-        
-        return AgentExecutor(
-            agent=agent,
-            tools=tools,
-            memory=memory,
-            verbose=True,
-            return_intermediate_steps=True
-        )
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-pro')
+        return model
     except Exception as e:
         logger.error(f"Error creating agent: {str(e)}")
         raise
 
-def plan_search_keywords(question, api_key):
+def plan_search_keywords(question, model):
     try:
-        llm = ChatOpenAI(temperature=0.7, model_name="gpt-3.5-turbo", api_key=api_key)
-        response = llm.invoke(SEARCH_PLANNING_PROMPT.format(question=question))
-        return response.content
+        response = model.generate_content(f"以下の質問に対する適切な検索キーワードを提案してください：\n{question}")
+        return response.text
     except Exception as e:
         logger.error(f"Error planning search keywords: {str(e)}")
         raise
 
 # Streamlit UI
-st.title("インターネットで調べ物をしてくれるエージェント")
+st.title("Geminiを使用したWeb検索エージェント")
 
 # セッション状態の初期化
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 
-# OpenAI API Keyの入力
-api_key = st.text_input("OpenAI API Keyを入力してください", type="password")
+# Google AI API Keyの入力
+api_key = st.text_input("Google AI API Keyを入力してください", type="password")
 
 if api_key:
     try:
@@ -103,26 +93,36 @@ if api_key:
             try:
                 # 検索キーワードの計画
                 with st.spinner("検索キーワードを計画中..."):
-                    search_keywords = plan_search_keywords(user_input, api_key)
+                    search_keywords = plan_search_keywords(user_input, st.session_state.agent)
                 st.write("計画された検索キーワード:", search_keywords)
 
-                # エージェントの実行
+                # Web検索の実行
+                with st.spinner("Web検索を実行中..."):
+                    search_results = search_ddg(search_keywords)
+
+                # 検索結果の表示（デバッグ用）
+                st.subheader("検索結果")
+                for result in search_results:
+                    st.write(f"Title: {result['title']}")
+                    st.write(f"Snippet: {result['snippet']}")
+                    st.write(f"URL: {result['link']}")
+                    st.write("---")
+
+                # コンテンツの取得と要約
+                content = ""
+                for result in search_results:
+                    content += fetch_page(result['link']) + "\n\n"
+
+                # Geminiによる回答生成
                 with st.spinner("回答を生成中..."):
-                    response = st.session_state.agent.invoke(
-                        {"input": f"検索キーワード: {search_keywords}\n質問: {user_input}"}
-                    )
+                    prompt = f"{CUSTOM_SYSTEM_PROMPT}\n\nユーザーの質問: {user_input}\n\n検索結果:\n{content}\n\n上記の情報を基に、ユーザーの質問に答えてください。"
+                    response = st.session_state.agent.generate_content(prompt)
 
                 # エージェントの回答を表示
                 with st.chat_message("assistant"):
-                    st.write(response["output"])
-                st.session_state.chat_history.append({"role": "assistant", "content": response["output"]})
+                    st.write(response.text)
+                st.session_state.chat_history.append({"role": "assistant", "content": response.text})
 
-                # 推論過程の表示
-                st.subheader("推論過程")
-                for step in response["intermediate_steps"]:
-                    st.write(f"行動: {step[0]}")
-                    st.write(f"結果: {step[1]}")
-                    st.write("---")
             except Exception as e:
                 st.error(f"エラーが発生しました: {str(e)}")
                 logger.error(f"Error during agent execution: {str(e)}")
@@ -130,4 +130,4 @@ if api_key:
         st.error(f"エラーが発生しました: {str(e)}")
         logger.error(f"Error in main app flow: {str(e)}")
 else:
-    st.warning("OpenAI API Keyを入力してください")
+    st.warning("Google AI API Keyを入力してください")
