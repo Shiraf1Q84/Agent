@@ -5,6 +5,7 @@ from langchain_openai import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
 from tools.search_ddg import search_ddg
 from tools.fetch_page import fetch_page
+import os
 
 # AgentのSystem Promptの作成
 CUSTOM_SYSTEM_PROMPT = """
@@ -14,7 +15,6 @@ CUSTOM_SYSTEM_PROMPT = """
 3. 検索結果から関連情報を抽出し、ユーザーの質問に答える。
 4. 必要に応じて追加の情報を検索する。
 5. 最終的な回答を作成し、使用した情報源を引用する。
-
 回答する際は以下のルールに従ってください：
 - 回答は簡潔にまとめ、必要に応じて箇条書きを使用する。
 - 長文になる場合は適切に改行を入れて読みやすくする。
@@ -26,13 +26,11 @@ CUSTOM_SYSTEM_PROMPT = """
 SEARCH_PLANNING_PROMPT = """
 ユーザーの質問に基づいて、適切な検索キーワードを計画してください。
 複数のキーワードや検索オプションを検討し、最も効果的な検索戦略を提案してください。
-
 ユーザーの質問: {question}
-
 検索キーワード案:
 """
 
-def create_agent():
+def create_agent(api_key):
     tools = [search_ddg, fetch_page]
     
     prompt = ChatPromptTemplate.from_messages([
@@ -41,8 +39,7 @@ def create_agent():
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad")
     ])
-
-    llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo")
+    llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo", api_key=api_key)
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     
     agent = create_tool_calling_agent(llm, tools, prompt)
@@ -55,8 +52,8 @@ def create_agent():
         return_intermediate_steps=True
     )
 
-def plan_search_keywords(question):
-    llm = ChatOpenAI(temperature=0.7, model_name="gpt-3.5-turbo")
+def plan_search_keywords(question, api_key):
+    llm = ChatOpenAI(temperature=0.7, model_name="gpt-3.5-turbo", api_key=api_key)
     response = llm.invoke(SEARCH_PLANNING_PROMPT.format(question=question))
     return response.content
 
@@ -64,16 +61,17 @@ def plan_search_keywords(question):
 st.title("インターネットで調べ物をしてくれるエージェント")
 
 # セッション状態の初期化
-if 'agent' not in st.session_state:
-    st.session_state.agent = create_agent()
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 
 # OpenAI API Keyの入力
 api_key = st.text_input("OpenAI API Keyを入力してください", type="password")
+
 if api_key:
-    import os
-    os.environ["OPENAI_API_KEY"] = api_key
+    # APIキーが入力されたら、エージェントを作成または更新
+    if 'agent' not in st.session_state or st.session_state.api_key != api_key:
+        st.session_state.agent = create_agent(api_key)
+        st.session_state.api_key = api_key
 
     # チャット履歴の表示
     for message in st.session_state.chat_history:
@@ -82,7 +80,6 @@ if api_key:
 
     # ユーザー入力
     user_input = st.chat_input("質問を入力してください")
-
     if user_input:
         # ユーザーの入力を表示
         with st.chat_message("user"):
@@ -91,7 +88,7 @@ if api_key:
 
         # 検索キーワードの計画
         with st.spinner("検索キーワードを計画中..."):
-            search_keywords = plan_search_keywords(user_input)
+            search_keywords = plan_search_keywords(user_input, api_key)
         st.write("計画された検索キーワード:", search_keywords)
 
         # エージェントの実行
@@ -111,6 +108,5 @@ if api_key:
             st.write(f"行動: {step[0]}")
             st.write(f"結果: {step[1]}")
             st.write("---")
-
 else:
     st.warning("OpenAI API Keyを入力してください")
